@@ -1,14 +1,12 @@
-﻿using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
-using NuGet;
-using NuGet.Versioning;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Text;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using NuGet.Versioning;
 
 namespace GenerateToolingFeed
 {
@@ -16,14 +14,14 @@ namespace GenerateToolingFeed
     {
         public static System.Net.Http.HttpClient HttpClient => _lazyClient.Value;
 
-        public static string GetDownloadLink(CliEntry cliEntry, string cliVersion, bool isMinified = false)
+        public static string GetDownloadLink(string os, string architecture, string cliVersion, bool isMinified = false)
         {
             string rid = string.Empty;
             if (isMinified)
             {
                 rid = "min.";
             }
-            rid += GetRuntimeIdentifier(false, cliEntry.OperatingSystem ?? cliEntry.OS, cliEntry.Architecture);
+            rid += GetRuntimeIdentifier(false, os, architecture);
             var url = $"https://functionscdn.azureedge.net/public/{cliVersion}/Azure.Functions.Cli.{rid}.{cliVersion}.zip";
 
             // bypassing validation for now
@@ -47,6 +45,11 @@ namespace GenerateToolingFeed
                 }
             }
 
+            if (!versions.Any())
+            {
+                return null;
+            }
+
             var nuGetVersions = versions.Select(p =>
             {
                 Version.TryParse(p, out Version version);
@@ -57,16 +60,16 @@ namespace GenerateToolingFeed
             return releaseVersion.ToString();
         }
 
-        public static string GetShaFileContent(CliEntry cliEntry, string cliVersion, string filePath, bool isMinified = false)
+        public static string GetShaFileContent(string os, string architecture, string cliVersion, string filePath, bool isMinified = false)
         {
-            string rid = GetRuntimeIdentifier(isMinified, cliEntry.OperatingSystem ?? cliEntry.OS, cliEntry.Architecture);
+            string rid = GetRuntimeIdentifier(isMinified, os, architecture);
             string fileName = $"Azure.Functions.Cli.{rid}.{cliVersion}.zip.sha2";
 
             string path = Path.Combine(filePath, fileName);
             return File.ReadAllText(path);
         }
 
-        public static string GetLatestPackageVersion(string packageId, string cliVersion)
+        public static string GetLatestPackageVersion(string packageId, int cliMajor)
         {
             string url = $"https://api.nuget.org/v3-flatcontainer/{packageId.ToLower()}/index.json";
             var response = HttpClient.GetStringAsync(url).Result;
@@ -74,10 +77,9 @@ namespace GenerateToolingFeed
 
             var versions = JsonConvert.DeserializeObject<IEnumerable<string>>(versionsObject["versions"].ToString());
 
-            NuGetVersion version = new NuGetVersion(cliVersion);
             var nuGetVersions = versions.Select(p =>
             {
-                if (NuGetVersion.TryParse(p, out NuGetVersion nuGetVersion) && nuGetVersion.Major == version.Major)
+                if (NuGetVersion.TryParse(p, out NuGetVersion nuGetVersion) && nuGetVersion.Major == cliMajor)
                 {
                     return nuGetVersion;
                 }
@@ -86,9 +88,9 @@ namespace GenerateToolingFeed
             return nuGetVersions.OrderByDescending(p => p.Version).FirstOrDefault()?.ToString();
         }
 
-        public static string GetTemplateUrl(string packageId, string cliVersion)
+        public static string GetTemplateUrl(string packageId, int cliMajor)
         {
-            string version = GetLatestPackageVersion(packageId, cliVersion);
+            string version = GetLatestPackageVersion(packageId, cliMajor);
             return $"https://www.nuget.org/api/v2/package/{packageId}/{version}";
         }
 
@@ -123,6 +125,27 @@ namespace GenerateToolingFeed
             return rid;
         }
 
+        public static void MergeObjectToJToken(JObject source, object toMerge)
+        {
+            // Clone source for iterating. That way we can modify acutal source in place
+            JObject cloneSource = source.DeepClone() as JObject;
+
+            foreach (var jsonItem in cloneSource)
+            {
+                string tokenName = jsonItem.Key;
+                JToken tokenValue = jsonItem.Value;
+
+                foreach (var prop in toMerge.GetType().GetProperties())
+                {
+                    if (string.Equals(tokenName, prop.Name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        source[tokenName] = JToken.FromObject(prop.GetValue(toMerge));
+                        break;
+                    }
+                }
+            }
+        }
+
         public static bool IsValidDownloadLink(string url)
         {
             var result = HttpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).Result;
@@ -143,19 +166,12 @@ namespace GenerateToolingFeed
             return releaseVersion;
         }
 
-        public static string GetTagFromMajorVersion(int majorVersion)
+        public static string GetTagFromMajorVersion(int majorVersion) => majorVersion switch
         {
-            switch (majorVersion)
-            {
-                case 2:
-                    return "v2";
-                case 3:
-                    return "v3";
-                default:
-                    return "v2";
-            }
-            
-        }
-
+            2 => "v2",
+            3 => "v3",
+            4 => "v4",
+            _ => throw new ArgumentNullException($"{majorVersion} is not a supported version.", nameof(majorVersion))
+        };
     }
 }
